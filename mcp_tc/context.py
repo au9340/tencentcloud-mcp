@@ -8,11 +8,12 @@ from .auth import Credentials
 
 DEFAULT_TIMEOUT_MS = 20_000
 DEFAULT_MAX_REQUESTS = 20
-DEFAULT_REGION: str | None = None
 
 
 def _env_int(name: str, default: int) -> int:
-    raw = __import__("os").environ.get(name)
+    import os
+
+    raw = os.environ.get(name)
     if not raw:
         return default
     try:
@@ -27,7 +28,7 @@ class RequestContext:
 
     credentials: Credentials | None = None
     engine: str = "api"
-    default_region: str | None = DEFAULT_REGION
+    default_region: str | None = None
     max_requests: int = DEFAULT_MAX_REQUESTS
     timeout_ms: int = DEFAULT_TIMEOUT_MS
     require_confirm: bool = False
