@@ -1,5 +1,0 @@
-# SCF 上不需要任何第三方依赖：全部用 Python 3.10 标准库。
-#
-# 只有 engine=sdk 才需要按产品装官方 SDK（包很大，SCF 上不推荐）：
-# tencentcloud-sdk-python-common
-# tencentcloud-sdk-python-cvm
