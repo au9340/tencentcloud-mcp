@@ -1,0 +1,267 @@
+{
+  "cvm": {
+    "version": "2017-03-12",
+    "product": "云服务器 CVM",
+    "docUrl": "https://cloud.tencent.com/document/api/213",
+    "actions": {
+      "DescribeInstances": {
+        "summary": "查询实例列表（可按 ID / 过滤条件分页拉取）",
+        "params": {
+          "InstanceIds": "Array of String，如 [\"ins-xxx\"]",
+          "Filters": "Array of Filter，Name 可选 instance-id / instance-name / zone",
+          "Limit": "Integer，默认 20，最大 100",
+          "Offset": "Integer"
+        }
+      },
+      "DescribeRegions": { "summary": "列出 CVM 支持的地域", "requiresRegion": false },
+      "DescribeZones": { "summary": "列出某地域下的可用区" },
+      "RunInstances": {
+        "summary": "创建实例（按量计费需 ImageId / InstanceType / Placement）",
+        "dangerous": true,
+        "params": {
+          "ImageId": "String，镜像 ID",
+          "InstanceType": "String，如 S5.MEDIUM2",
+          "Placement": "Placement 对象，{ Zone: \"ap-guangzhou-3\" }",
+          "InstanceChargeType": "POSTPAID_BY_HOUR / PREPAID",
+          "InstanceCount": "Integer"
+        }
+      },
+      "StartInstances": { "summary": "开机", "dangerous": true, "params": { "InstanceIds": "Array of String" } },
+      "StopInstances": {
+        "summary": "关机（StopType=SOFT 为软关机）",
+        "dangerous": true,
+        "params": { "InstanceIds": "Array of String", "StopType": "SOFT / HARD / SOFT_FIRST" }
+      },
+      "RebootInstances": { "summary": "重启实例", "dangerous": true, "params": { "InstanceIds": "Array of String" } },
+      "TerminateInstances": { "summary": "销毁实例（不可逆）", "dangerous": true, "params": { "InstanceIds": "Array of String" } },
+      "ModifyInstancesAttribute": {
+        "summary": "修改实例名称或安全组绑定",
+        "params": { "InstanceIds": "Array of String", "InstanceName": "String" }
+      }
+    }
+  },
+  "vpc": {
+    "version": "2017-03-12",
+    "product": "私有网络 VPC",
+    "docUrl": "https://cloud.tencent.com/document/api/215",
+    "actions": {
+      "DescribeVpcs": {
+        "summary": "查询 VPC 列表",
+        "params": { "VpcIds": "Array of String", "Filters": "Array of Filter", "Limit": "Integer，默认 10", "Offset": "Integer" }
+      },
+      "CreateVpc": { "summary": "创建 VPC", "params": { "VpcName": "String", "CidrBlock": "String，如 10.0.0.0/16" } },
+      "DeleteVpc": { "summary": "删除 VPC（需先清空子网）", "dangerous": true, "params": { "VpcId": "String" } },
+      "DescribeSubnets": { "summary": "查询子网列表", "params": { "VpcId": "String", "SubnetIds": "Array of String" } },
+      "DescribeSecurityGroups": {
+        "summary": "查询安全组及其规则",
+        "params": { "SecurityGroupIds": "Array of String，如 [\"sg-xxx\"]", "Filters": "Array of Filter" }
+      },
+      "DescribeSecurityGroupPolicies": { "summary": "查询安全组入站/出站规则明细", "params": { "SecurityGroupId": "String" } },
+      "DescribeAddresses": { "summary": "查询弹性公网 IP 列表", "params": { "AddressIds": "Array of String", "Filters": "Array of Filter" } },
+      "DescribeRouteTables": { "summary": "查询路由表", "params": { "RouteTableIds": "Array of String", "Filters": "Array of Filter" } }
+    }
+  },
+  "cbs": {
+    "version": "2017-03-12",
+    "product": "云硬盘 CBS",
+    "docUrl": "https://cloud.tencent.com/document/api/362",
+    "actions": {
+      "DescribeDisks": {
+        "summary": "查询云硬盘列表（含挂载信息、类型、容量）",
+        "params": {
+          "DiskIds": "Array of String，如 [\"disk-xxx\"]",
+          "Filters": "Array of Filter，Name 可选 disk-name / disk-usage / instance-id",
+          "Limit": "Integer",
+          "Offset": "Integer"
+        }
+      },
+      "DescribeDiskConfigQuota": {
+        "summary": "查询可创建的云盘类型与配额",
+        "params": { "DiskChargeType": "POSTPAID_BY_HOUR / PREPAID", "DiskUsage": "SYSTEM_DISK / DATA_DISK" }
+      },
+      "CreateDisks": {
+        "summary": "创建云硬盘",
+        "params": { "DiskSize": "Integer，GB", "DiskType": "CLOUD_PREMIUM / CLOUD_SSD / CLOUD_BASIC", "Placement": "{ Zone }", "DiskCount": "Integer" }
+      },
+      "AttachDisks": { "summary": "挂载云盘到实例", "params": { "DiskIds": "Array of String", "InstanceId": "String" } },
+      "DetachDisks": { "summary": "卸载云盘（不删数据）", "dangerous": true, "params": { "DiskIds": "Array of String" } },
+      "DeleteDisks": { "summary": "销毁云盘（不可逆）", "dangerous": true, "params": { "DiskIds": "Array of String" } }
+    }
+  },
+  "clb": {
+    "version": "2017-03-12",
+    "product": "负载均衡 CLB",
+    "docUrl": "https://cloud.tencent.com/document/api/214",
+    "actions": {
+      "DescribeLoadBalancers": {
+        "summary": "查询负载均衡实例列表",
+        "params": { "LoadBalancerIds": "Array of String，如 [\"lb-xxx\"]", "Filters": "Array of Filter", "Limit": "Integer", "Offset": "Integer" }
+      },
+      "DescribeListeners": { "summary": "查询监听器列表", "params": { "LoadBalancerIds": "Array of String", "Protocol": "HTTP / HTTPS / TCP / UDP" } },
+      "DescribeTargets": { "summary": "查询监听器绑定的后端机器", "params": { "LoadBalancerId": "String", "ListenerIds": "Array of String" } },
+      "RegisterTargets": {
+        "summary": "绑定后端机器到监听器",
+        "params": { "LoadBalancerId": "String", "ListenerId": "String", "Targets": "Array of Target { InstanceId, Port, Weight }" }
+      },
+      "DeregisterTargets": {
+        "summary": "解绑后端机器",
+        "dangerous": true,
+        "params": { "LoadBalancerId": "String", "ListenerId": "String", "Targets": "Array of Target" }
+      },
+      "DeleteLoadBalancer": { "summary": "删除负载均衡实例", "dangerous": true, "params": { "LoadBalancerIds": "Array of String" } }
+    }
+  },
+  "lighthouse": {
+    "version": "2020-03-24",
+    "product": "轻量应用服务器 Lighthouse",
+    "docUrl": "https://cloud.tencent.com/document/api/1207",
+    "actions": {
+      "DescribeInstances": {
+        "summary": "查询轻量实例列表",
+        "params": { "InstanceIds": "Array of String，如 [\"lhins-xxx\"]", "Filters": "Array of Filter", "Limit": "Integer", "Offset": "Integer" }
+      },
+      "DescribeRegions": { "summary": "列出轻量服务器可用地域", "requiresRegion": false },
+      "DescribeBlueprints": { "summary": "列出可用镜像" },
+      "DescribeBundles": { "summary": "列出套餐（Bundle）" },
+      "StartInstances": { "summary": "开机", "dangerous": true, "params": { "InstanceIds": "Array of String" } },
+      "StopInstances": { "summary": "关机", "dangerous": true, "params": { "InstanceIds": "Array of String" } },
+      "RebootInstances": { "summary": "重启", "dangerous": true, "params": { "InstanceIds": "Array of String" } },
+      "TerminateInstances": { "summary": "销毁轻量实例（不可逆）", "dangerous": true, "params": { "InstanceIds": "Array of String" } }
+    }
+  },
+  "scf": {
+    "version": "2018-04-16",
+    "product": "云函数 SCF",
+    "docUrl": "https://cloud.tencent.com/document/api/583",
+    "actions": {
+      "ListFunctions": { "summary": "列出函数", "params": { "Namespace": "String，默认 default", "Limit": "Integer", "Offset": "Integer" } },
+      "GetFunction": { "summary": "获取函数详情（配置、代码地址等）", "params": { "FunctionName": "String", "Namespace": "String" } },
+      "Invoke": {
+        "summary": "同步/异步调用函数",
+        "dangerous": true,
+        "params": {
+          "FunctionName": "String",
+          "InvocationType": "RequestResponse / Event",
+          "ClientContext": "String，传给函数的 JSON（base64）",
+          "Qualifier": "String，版本或别名"
+        }
+      },
+      "ListNamespaces": { "summary": "列出命名空间" },
+      "GetFunctionLogs": {
+        "summary": "查询函数调用日志",
+        "params": { "FunctionName": "String", "Limit": "Integer", "StartTime": "String" }
+      },
+      "ListTriggers": { "summary": "列出函数触发器", "params": { "FunctionName": "String", "Namespace": "String" } }
+    }
+  },
+  "tat": {
+    "version": "2020-10-28",
+    "product": "自动化助手 TAT",
+    "docUrl": "https://cloud.tencent.com/document/api/1340",
+    "actions": {
+      "RunCommand": {
+        "summary": "在实例上批量执行 Shell/PowerShell 命令（异步，用 DescribeInvocationTasks 查结果）",
+        "dangerous": true,
+        "params": {
+          "CommandType": "SHELL / POWERSHELL / BAT",
+          "Content": "String，base64 编码后的命令",
+          "InstanceIds": "Array of String",
+          "Timeout": "Integer，秒",
+          "WorkingDirectory": "String"
+        }
+      },
+      "DescribeCommands": { "summary": "查询命令列表", "params": { "CommandIds": "Array of String" } },
+      "DescribeInvocations": { "summary": "查询执行活动列表", "params": { "InvocationIds": "Array of String" } },
+      "DescribeInvocationTasks": {
+        "summary": "查询执行任务明细（含输出、退出码）",
+        "params": { "InvocationTaskIds": "Array of String", "Filters": "Array of Filter" }
+      },
+      "DescribeRegions": { "summary": "列出 TAT 支持的地域", "requiresRegion": false }
+    }
+  },
+  "cam": {
+    "version": "2019-01-16",
+    "product": "访问管理 CAM",
+    "docUrl": "https://cloud.tencent.com/document/api/598",
+    "actions": {
+      "GetUserAppId": { "summary": "获取当前身份的主账号 Uin / AppId / OwnerUin", "requiresRegion": false },
+      "ListUsers": { "summary": "列出子用户", "requiresRegion": false, "params": { "Limit": "Integer", "Offset": "Integer" } },
+      "ListGroups": { "summary": "列出用户组", "requiresRegion": false },
+      "ListRoles": { "summary": "列出角色", "requiresRegion": false },
+      "ListPolicies": {
+        "summary": "列出策略（Scope=Local 自定义 / QCS 预设）",
+        "requiresRegion": false,
+        "params": { "Scope": "All / QCS / Local", "Keyword": "String" }
+      },
+      "ListAttachedUserPolicies": {
+        "summary": "列出某个子用户绑定的策略",
+        "requiresRegion": false,
+        "params": { "TargetUin": "Integer，子用户 Uin" }
+      }
+    }
+  },
+  "sts": {
+    "version": "2018-08-13",
+    "product": "临时密钥 STS",
+    "docUrl": "https://cloud.tencent.com/document/api/1312",
+    "actions": {
+      "GetCallerIdentity": { "summary": "返回当前凭据的身份（AccountId / UserId / Arn），whoami 用", "requiresRegion": false },
+      "GetFederationToken": {
+        "summary": "获取临时访问凭证",
+        "requiresRegion": false,
+        "params": { "Name": "String", "DurationSeconds": "Integer，默认 7200", "Policy": "String，策略 JSON" }
+      },
+      "AssumeRole": {
+        "summary": "扮演角色，获取角色临时凭证",
+        "requiresRegion": false,
+        "params": { "RoleArn": "String", "RoleSessionName": "String", "DurationSeconds": "Integer" }
+      }
+    }
+  },
+  "dnspod": {
+    "version": "2021-03-23",
+    "product": "DNSPod 域名解析",
+    "docUrl": "https://cloud.tencent.com/document/api/1427",
+    "actions": {
+      "DescribeDomainList": {
+        "summary": "列出账号下的域名",
+        "requiresRegion": false,
+        "params": { "Type": "ALL / MY / SHARE", "Offset": "Integer", "Limit": "Integer" }
+      },
+      "DescribeRecordList": {
+        "summary": "查询某个域名的解析记录",
+        "requiresRegion": false,
+        "params": {
+          "Domain": "String，如 example.com",
+          "Subdomain": "String，主机记录，如 www",
+          "RecordType": "A / AAAA / CNAME / TXT / MX / NS",
+          "Limit": "Integer，默认 100",
+          "Offset": "Integer"
+        }
+      },
+      "CreateRecord": {
+        "summary": "新增解析记录",
+        "requiresRegion": false,
+        "params": {
+          "Domain": "String",
+          "SubDomain": "String，@ 表示根域名",
+          "RecordType": "String",
+          "RecordLine": "String，如 默认",
+          "Value": "String",
+          "TTL": "Integer，默认 600"
+        }
+      },
+      "ModifyRecord": {
+        "summary": "修改解析记录",
+        "requiresRegion": false,
+        "params": { "Domain": "String", "RecordId": "Integer", "SubDomain": "String", "RecordType": "String", "Value": "String" }
+      },
+      "DeleteRecord": {
+        "summary": "删除解析记录",
+        "dangerous": true,
+        "requiresRegion": false,
+        "params": { "Domain": "String", "RecordId": "Integer" }
+      }
+    }
+  }
+}
