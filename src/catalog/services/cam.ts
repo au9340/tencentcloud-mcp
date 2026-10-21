@@ -4,7 +4,6 @@ export const cam: ServiceDoc = {
   version: "2019-01-16",
   product: "访问管理 CAM",
   docUrl: "https://cloud.tencent.com/document/api/598",
-  requiresRegion: false,
   actions: {
     GetUserAppId: {
       summary: "获取当前身份的主账号 Uin / AppId / OwnerUin。",
