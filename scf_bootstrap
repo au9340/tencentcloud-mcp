@@ -1,0 +1,15 @@
+#!/bin/bash
+# SCF Web 函数启动脚本。平台会执行本文件，并要求你的进程监听 0.0.0.0:9000。
+#
+# 三个必须满足的硬条件（否则控制台会报 scf_bootstrap 启动失败）：
+#   1. chmod +x scf_bootstrap（make package 已自动处理）
+#   2. LF 换行、无 BOM
+#   3. 端口固定 9000，监听地址必须是 0.0.0.0（不能是 127.0.0.1）
+set -euo pipefail
+
+cd "$(dirname "$0")" || exit 1
+export PYTHONUNBUFFERED=1
+export MCP_HOST=0.0.0.0
+export MCP_PORT=9000
+
+exec python3 -u serve.py --host 0.0.0.0 --port 9000
