@@ -17,9 +17,8 @@
   Authorization: Bearer base64(<secretId>:<secretKey>[:<sessionToken>])
 
 环境变量（全部可选）：
-  MCP_DEFAULT_REGION（默认地域） / MCP_MAX_REQUESTS（单次 execute 最多 API 调用数，默认 20）
-  MCP_TIMEOUT_MS（单次 API 超时，默认 20000） / MCP_REQUEST_TIMEOUT_S（单请求预算，默认 55）
-  MCP_REQUIRE_CONFIRM=1（写/删类 Action 需 confirm=True） / MCP_ALLOW_ENV_CREDENTIALS=1（回退到环境变量密钥）
+  MCP_DEFAULT_REGION / MCP_MAX_REQUESTS(20) / MCP_TIMEOUT_MS(20000)
+  MCP_REQUEST_TIMEOUT_S(55) / MCP_REQUIRE_CONFIRM / MCP_ALLOW_ENV_CREDENTIALS / MCP_ENGINE(api|sdk)
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ import ast
 import asyncio
 import base64
 import binascii
+import builtins
 import hashlib
 import hmac
 import inspect
@@ -40,12 +40,12 @@ import textwrap
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 DEFAULT_PROTOCOL = "2025-06-18"
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 MAX_CODE_BYTES = 20_000
@@ -65,10 +65,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 # =========================================================================== 目录
-# 相当于 cloudflare/mcp 里那份 OpenAPI spec 的瘦身版：只要“指路牌”——
-# service(=API 域名子域) + version + Action + 常用参数。
-# action 的值：("说明", {参数: 说明}, {标记})
-#   标记 requiresRegion=False → 不需要 region；dangerous=True → 写/删类高危
+# 相当于 cloudflare/mcp 里那份 OpenAPI spec 的瘦身版：只要“指路牌”。
+# action 的值：("说明", {参数: 说明}, {标记})，标记支持 requiresRegion=False / dangerous=True
 CATALOG: dict[str, dict[str, Any]] = {
     "cvm": {
         "version": "2017-03-12",
@@ -440,6 +438,10 @@ class CodeRejected(ValueError):
     pass
 
 
+class AuthError(Exception):
+    pass
+
+
 def _sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -473,9 +475,7 @@ def sign_tc3(
         ["POST", "/", "", canonical_headers, signed_headers, _sha256_hex(payload)]
     )
     scope = f"{date}/{service}/tc3_request"
-    string_to_sign = "\n".join(
-        [TC3_ALGORITHM, str(ts), scope, _sha256_hex(canonical_request)]
-    )
+    string_to_sign = "\n".join([TC3_ALGORITHM, str(ts), scope, _sha256_hex(canonical_request)])
 
     key = _hmac(f"TC3{secret_key}".encode("utf-8"), date)
     key = _hmac(key, service)
@@ -508,10 +508,6 @@ class Credentials:
 
     def fingerprint(self) -> str:
         return f"secretId:{self.secret_id[:6]}***" + (":sts" if self.token else "")
-
-
-class AuthError(Exception):
-    pass
 
 
 def parse_credentials(headers: dict[str, str]) -> Credentials | None:
@@ -609,7 +605,7 @@ class TencentClient:
         if not ver:
             raise ApiError(
                 f'无法确定 service="{code}" 的 version：目录里没有该产品。'
-                f'请显式传 version，如 {{service: "{code}", version: "2017-03-12", action: "{name}"}}'
+                f'请显式传 version，如 tencent.request(service="{code}", version="2017-03-12", action="{name}")'
             )
         if not VERSION_RE.match(ver):
             raise ApiError('version 应形如 "2017-03-12"')
@@ -669,14 +665,13 @@ class TencentClient:
             region=region,
             token=self.credentials.token,
         )
-        req = urllib.request.Request(
-            url, data=payload.encode("utf-8"), headers=headers, method="POST"
-        )
+        req = urllib.request.Request(url, data=payload.encode("utf-8"), headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=self.ctx.timeout()) as resp:
                 text = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
-            raise ApiError(f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}") from exc
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            raise ApiError(f"HTTP {exc.code}: {detail}") from exc
         except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
             raise ApiError(f"{service}:{action} 请求失败或超时：{exc}") from exc
 
@@ -704,9 +699,7 @@ class TencentClient:
 
         vpath = version.replace("-", "")
         try:
-            client_module = importlib.import_module(
-                f"tencentcloud.{service}.v{vpath}.{service}_client"
-            )
+            client_module = importlib.import_module(f"tencentcloud.{service}.v{vpath}.{service}_client")
             models_module = importlib.import_module(f"tencentcloud.{service}.v{vpath}.models")
             from tencentcloud.common.credential import Credential
         except ModuleNotFoundError as exc:
@@ -716,7 +709,11 @@ class TencentClient:
             ) from exc
 
         client = getattr(client_module, f"{service.capitalize()}Client")(
-            Credential(self.credentials.secret_id, self.credentials.secret_key, self.credentials.token or ""),
+            Credential(
+                self.credentials.secret_id,
+                self.credentials.secret_key,
+                self.credentials.token or "",
+            ),
             region or "",
         )
         req = getattr(models_module, f"{action}Request")()
@@ -727,7 +724,7 @@ class TencentClient:
 
 
 class Facade:
-    """沙箱里的 `tencent` 对象：tencent.request({...}) 或 tencent.request(service=..., ...)"""
+    """沙箱里的 `tencent`：tencent.request({...}) 或 tencent.request(service=..., ...)"""
 
     ALLOWED = ("service", "action", "params", "region", "version", "confirm")
 
@@ -755,13 +752,17 @@ class Facade:
 
 
 # =================================================================== 代码沙箱
-SAFE_BUILTINS: dict[str, Any] = {
-    name: __builtins__[name]  # type: ignore[index]
-    for name in (
-        "abs all any bool dict divmod enumerate Exception filter float int isinstance len list "
-        "map max min range repr reversed round RuntimeError set slice sorted str sum tuple "
-        "TypeError ValueError zip"
-    ).split()
+_SAFE_NAMES = (
+    "abs all any bool dict divmod enumerate Exception filter float int isinstance len list "
+    "map max min range repr reversed round RuntimeError set slice sorted str sum tuple "
+    "TypeError ValueError zip"
+).split()
+
+SAFE_BUILTINS: dict[str, Any] = {name: getattr(builtins, name) for name in _SAFE_NAMES}
+
+_BLOCKED_NAMES = {
+    "eval", "exec", "open", "compile", "input", "getattr", "setattr", "delattr",
+    "vars", "globals", "locals", "breakpoint", "memoryview", "object",
 }
 
 
@@ -771,7 +772,7 @@ def _validate(tree: ast.AST) -> None:
             raise CodeRejected("沙箱不允许 import；可用：tencent / spec / search_actions / region")
         if isinstance(node, (ast.Global, ast.Nonlocal)):
             raise CodeRejected("沙箱不允许 global / nonlocal")
-        if isinstance(node, ast.Name) and (node.id.startswith("__") or node.id in {"eval", "exec", "open", "compile", "input", "getattr", "setattr", "delattr", "vars", "globals", "locals"}):
+        if isinstance(node, ast.Name) and (node.id.startswith("__") or node.id in _BLOCKED_NAMES):
             raise CodeRejected(f"沙箱不允许使用 {node.id}")
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             raise CodeRejected("沙箱不允许访问双下划线属性")
@@ -787,9 +788,8 @@ def run_code(code: str, env: dict[str, Any], timeout_s: float = 15.0) -> Any:
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError:
-        # 模型可能直接写顶层 return / await，当成函数体再解析一次
-        tree = ast.parse("async def __code__():\n" + textwrap.indent(code, "    "))
-        _validate(tree)
+        # 模型可能直接写顶层 return / await，当成函数体再解析
+        _validate(ast.parse("async def __code__():\n" + textwrap.indent(code, "    ")))
         body = code
     else:
         _validate(tree)
@@ -799,8 +799,8 @@ def run_code(code: str, env: dict[str, Any], timeout_s: float = 15.0) -> Any:
         body = "\n".join(ast.unparse(node) for node in tree.body) or "pass"
 
     module = compile("async def __code__():\n" + textwrap.indent(body, "    "), "<mcp-code>", "exec")
-    namespace: dict[str, Any] = {"__builtins__": SAFE_BUILTINS}
-    exec(module, namespace)  # noqa: S102
+    namespace: dict[str, Any] = {"__builtins__": SAFE_BUILTINS, **env}
+    exec(module, namespace)  # noqa: S102 - 受限 builtins + AST 白名单
     entry = namespace["__code__"]
 
     async def runner() -> Any:
@@ -876,9 +876,8 @@ TOOLS: list[dict[str, Any]] = [
 
 INSTRUCTIONS = (
     f"腾讯云 API MCP 服务器 v{VERSION}，Code Mode：4 个工具覆盖全量 API。\n"
-    "1) 不确定接口先用 search 或 docs；2) 用 execute 写 Python 调 tencent.request(...)；"
-    "3) whoami 看当前身份。\n"
-    "params 平铺（不要包成 {\"Params\": {...}}）；大部分 Action 需要 region；"
+    "1) 不确定接口先用 search 或 docs；2) 用 execute 写 Python 调 tencent.request(...)；3) whoami 看当前身份。\n"
+    'params 平铺（不要包成 {"Params": {...}}）；大部分 Action 需要 region；'
     "单次 execute 有 API 调用次数上限，结果超长会被截断，只返回必要字段。"
 )
 
@@ -937,8 +936,7 @@ def call_tool(name: str, arguments: Any, ctx: Ctx) -> dict[str, Any]:
         return _text(_truncate(_stringify(value), ctx))
 
     if name == "execute":
-        creds = _creds_of(ctx)
-        client = TencentClient(creds, ctx)
+        client = TencentClient(_creds_of(ctx), ctx)
         region = args.get("region") or ctx.default_region
         value = run_code(
             _code_of(args),
@@ -972,7 +970,10 @@ def call_tool(name: str, arguments: Any, ctx: Ctx) -> dict[str, Any]:
             flags = ("需要 region" if entry["requiresRegion"] else "不需要 region") + (
                 "，写/删类操作" if entry["dangerous"] else "，只读"
             )
-            params = "\n".join(f"  - {k}：{v}" for k, v in entry["params"].items()) or "  - （未收录，见官方文档）"
+            params = (
+                "\n".join(f"  - {k}：{v}" for k, v in entry["params"].items())
+                or "  - （未收录，见官方文档）"
+            )
             blocks.append(
                 f"### {entry['service']}:{entry['action']}（{entry['product']}，version {entry['version']}）\n"
                 f"{entry['summary']}\n- {flags}\n- 常用参数：\n{params}\n- 文档：{entry['docUrl']}"
@@ -1028,18 +1029,27 @@ def _json_http(status: int, payload: Any) -> tuple[int, dict[str, str], str]:
     return status, headers, json.dumps(payload, ensure_ascii=False)
 
 
+def _accepted() -> tuple[int, dict[str, str], str]:
+    return 202, {"Content-Type": "application/json; charset=utf-8", **CORS}, ""
+
+
 def _handle_message(message: Any, headers: dict[str, str], query: dict[str, Any], deadline: float | None):
     if not isinstance(message, dict) or not isinstance(message.get("method"), str):
-        return _rpc_err(message.get("id") if isinstance(message, dict) else None, -32600, "无效的 JSON-RPC 请求")
+        return _rpc_err(
+            message.get("id") if isinstance(message, dict) else None,
+            -32600,
+            "无效的 JSON-RPC 请求",
+        )
 
     msg_id, method = message.get("id"), message["method"]
-    params = message.get("params") or {}
+    params = message.get("params")
+    params = params if isinstance(params, dict) else {}
 
     if method.startswith("notifications/"):
         return _ACCEPTED
 
     if method == "initialize":
-        requested = params.get("protocolVersion") if isinstance(params, dict) else None
+        requested = params.get("protocolVersion")
         return _rpc_ok(
             msg_id,
             {
@@ -1060,8 +1070,6 @@ def _handle_message(message: Any, headers: dict[str, str], query: dict[str, Any]
         return _rpc_ok(msg_id, {"prompts": []})
 
     if method == "tools/call":
-        if not isinstance(params, dict):
-            return _rpc_err(msg_id, -32602, "tools/call 的 params 必须是对象")
         name = params.get("name")
         if not isinstance(name, str) or not name:
             return _rpc_err(msg_id, -32602, "tools/call 缺少 name")
@@ -1073,7 +1081,9 @@ def _handle_message(message: Any, headers: dict[str, str], query: dict[str, Any]
         except (ApiError, CodeRejected) as exc:
             return _rpc_ok(msg_id, {"content": [{"type": "text", "text": str(exc)}], "isError": True})
         except Exception as exc:  # noqa: BLE001 - 别让网关 5xx
-            return _rpc_ok(msg_id, {"content": [{"type": "text", "text": f"工具异常：{exc}"}], "isError": True})
+            return _rpc_ok(
+                msg_id, {"content": [{"type": "text", "text": f"工具异常：{exc}"}], "isError": True}
+            )
 
     return _rpc_err(msg_id, -32601, f"不支持的方法：{method}")
 
@@ -1093,10 +1103,7 @@ def handle_http(
     if method == "OPTIONS":
         return 200, dict(CORS), ""
     if method != "POST":
-        status, resp_headers, text = _json_http(
-            405,
-            _rpc_err(None, -32000, "无状态 MCP 服务器只接受 POST"),
-        )
+        status, resp_headers, text = _json_http(405, _rpc_err(None, -32000, "无状态 MCP 服务器只接受 POST"))
         resp_headers["Allow"] = "POST, OPTIONS"
         return status, resp_headers, text
     if not body.strip():
@@ -1108,19 +1115,15 @@ def handle_http(
         return _json_http(400, _rpc_err(None, -32700, f"JSON 解析失败：{exc}"))
 
     if isinstance(payload, list):
-        responses = []
-        for item in payload:
-            outcome = _handle_message(item, headers, query, deadline)
-            if outcome is not _ACCEPTED:
-                responses.append(outcome)
-        if not responses:
-            return 202, {"Content-Type": "application/json; charset=utf-8", **CORS}, ""
-        return _json_http(200, responses)
+        responses = [
+            outcome
+            for outcome in (_handle_message(item, headers, query, deadline) for item in payload)
+            if outcome is not _ACCEPTED
+        ]
+        return _json_http(200, responses) if responses else _accepted()
 
     outcome = _handle_message(payload, headers, query, deadline)
-    if outcome is _ACCEPTED:
-        return 202, {"Content-Type": "application/json; charset=utf-8", **CORS}, ""
-    return _json_http(200, outcome)
+    return _accepted() if outcome is _ACCEPTED else _json_http(200, outcome)
 
 
 # ================================================================== HTTP 服务器
@@ -1188,7 +1191,7 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[{self.log_date_time_string()}] {fmt % args}", flush=True)
 
 
-# ====================================================================== 自检
+# ======================================================================= 自检
 
 def _selftest() -> int:
     ok = True
@@ -1204,8 +1207,14 @@ def _selftest() -> int:
 
     def t_tc3() -> None:
         url, headers = sign_tc3(
-            "AKIDEXAMPLE", "SECRET", "cvm", "DescribeInstances", "2017-03-12", "{}",
-            region="ap-guangzhou", timestamp=1551113065,
+            "AKIDEXAMPLE",
+            "SECRET",
+            "cvm",
+            "DescribeInstances",
+            "2017-03-12",
+            "{}",
+            region="ap-guangzhou",
+            timestamp=1551113065,
         )
         assert url == "https://cvm.tencentcloudapi.com/", url
         assert "2019-02-25/cvm/tc3_request" in headers["Authorization"], headers
@@ -1213,8 +1222,7 @@ def _selftest() -> int:
 
     def t_catalog() -> None:
         assert len(ACTIONS) >= 50, len(ACTIONS)
-        hits = search_actions("cvm 实例")
-        assert any(h["action"] == "DescribeInstances" for h in hits), hits
+        assert any(h["action"] == "DescribeInstances" for h in search_actions("cvm 实例"))
 
     def t_sandbox() -> None:
         assert run_code("1 + 1", {}) == 2
@@ -1238,12 +1246,14 @@ def _selftest() -> int:
             "POST", "/mcp", {}, json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         )
         assert status == 200, status
-        names = [t["name"] for t in json.loads(body)["result"]["tools"]]
+        names = [tool["name"] for tool in json.loads(body)["result"]["tools"]]
         assert names == ["search", "execute", "docs", "whoami"], names
         status, _, _ = handle_http(
             "POST", "/mcp", {}, json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})
         )
         assert status == 202, status
+        status, _, _ = handle_http("GET", "/mcp", {}, "")
+        assert status == 405, status
 
     def t_tools() -> None:
         text = call_tool("docs", {"query": "cvm 实例"}, Ctx())["content"][0]["text"]
