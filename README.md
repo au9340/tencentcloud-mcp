@@ -1,88 +1,47 @@
 # tencentcloud-mcp
 
-> 用 4 个工具覆盖整个腾讯云 API。结构照搬 [`cloudflare/mcp`](https://github.com/cloudflare/mcp) 的 Code Mode 思路：`search` 给你一份瘦目录，`execute` 让你写代码打 API，另外还有 `docs` 和 `whoami`。
+> 4 个工具覆盖整个腾讯云 API。结构照搬 [`cloudflare/mcp`](https://github.com/cloudflare/mcp) 的 Code Mode：`search` 给一份瘦目录，`execute` 让你写代码打 API，另加 `docs` 和 `whoami`。
 
-远程 MCP 服务器，Streamable HTTP，无状态（每个请求一份 server 实例），可以直接被 Claude Code / Cursor / VS Code / Codex 连。
-
-## 为什么不是几千个工具
-
-腾讯云 API 和 Cloudflare API 一样是“端点海洋”。把每个 Action 都注册成 MCP 工具，光工具定义就吃掉整个上下文窗口：
-
-| 方案 | 工具数 | 估算 token |
-| --- | --- | --- |
-| 把 API 文档/OpenAPI 塞 prompt | — | 百万级 |
-| 原生 MCP（全量 schema） | 数千 | 几十万～百万 |
-| **Code Mode（本仓库）** | **4** | **～1k（固定）** |
-
-原理：spec 留在服务端，模型只拿到“怎么找”，找到后再写 JS 调用，只回传结果。token 消耗与 API 规模脱钩。
-
-## 结构
+**Python 3.10、零第三方依赖、为腾讯云函数 SCF 定制**：目录直接打 zip 上传就能跑，没有 pip 安装步骤、没有 cold start 时的依赖解压开销。
 
 ```
-MCP client (Claude Code / Cursor / VS Code ...)
-  │  POST /mcp   Streamable HTTP + JSON-RPC
-  ▼
-┌──────────────────────────────────────────────────────────┐
-│ src/index.ts           传输层：/mcp、/healthz、Bearer 鉴权  │
-├──────────────────────────────────────────────────────────┤
-│ src/mcp/server.ts      工具面：4 个 tool，每次请求重建       │
-│   search  execute  docs  whoami                          │
-├──────────────────────────────────────────────────────────┤
-│ src/core/sandbox.ts    执行层：跑模型写的 JS（vm）           │
-│   注入 tencent.request() / spec / region                  │
-├──────────────────────────────────────────────────────────┤
-│ src/core/requester.ts  ｜版本·region·confirm·限流          │
-│   ├── apiClient.ts     TC3-HMAC-SHA256 直连官方 HTTP API   │
-│   └── sdkClient.ts     tencentcloud-sdk-nodejs（可选）     │
-├──────────────────────────────────────────────────────────┤
-│ src/catalog/           Action 目录（spec 的瘦身版）         │
-└──────────────────────────────────────────────────────────┘
+你的 MCP 客户端  ──POST /mcp──►  SCF（main.main_handler）  ──TC3 签名──►  *.tencentcloudapi.com
+  Bearer secretId:secretKey            无状态、无存储               用调用方自己的密钥
 ```
 
-和 Cloudflare 版的对应关系：
+## 两个部署约束（决定了实现）
 
-| Cloudflare | 本仓库 |
-| --- | --- |
-| `@cloudflare/codemode` + Dynamic Worker | `src/core/sandbox.ts`（`node:vm`，可换成 Workers isolate） |
-| OpenAPI spec（2M tokens，留在服务端） | `src/catalog/`（服务名 + 版本 + 常用参数） |
-| `POST https://<service>.cloudflareapi.com` | `POST https://<service>.tencentcloudapi.com` + TC3 签名 |
-| OAuth / Bearer API token | Bearer `secretId:secretKey[:token]` / 服务端环境变量 |
-| 结果截断 ~6k tokens | 同名参数 `?truncateToolResult=false` |
+1. **SCF 事件函数不能流式返回**。所以本服务器只实现 Streamable HTTP 的 **JSON response** 模式（一次 POST 一次完整 JSON），不提供 SSE。客户端发 `Accept: application/json, text/event-stream` 也能正常工作，因为服务端声明返回 `application/json`。
+2. **不想在 SCF 里装 `mcp` SDK 的 ASGI 栈**，所以 `mcp_tc/server.py` 手写了最小 MCP 层：`initialize` / `tools/list` / `tools/call` / `ping` / notifications、批量请求、CORS、JSON-RPC 错误码。协议面很小且稳定，换来“一个 zip 就能跑”。
 
 ## 4 个工具
 
 | 工具 | 作用 |
 | --- | --- |
-| `search` | 写 JS 在 Action 目录里筛选：`spec.actions` / `spec.services` / `searchActions(kw)` |
-| `execute` | 写 JS 调 `tencent.request({ service, action, params, region })`，在代码里过滤/聚合后只 return 需要的字段 |
+| `search` | 写 Python 在 Action 目录里筛选：`spec["actions"]` / `search_actions(kw)` |
+| `execute` | 写 Python 调 `tencent.request(...)`，在代码里串联/过滤/聚合，只 return 需要的字段 |
 | `docs` | 关键词查参数含义、是否需要 region、是否高危、官方文档链接 |
 | `whoami` | 当前身份（`sts:GetCallerIdentity`，失败回退 `cam:GetUserAppId`）+ 引擎 + 默认地域 |
 
-## 快速开始
+为什么不是几十个工具：腾讯云 API 几千个 Action，全量 schema 会直接吃光上下文。Code Mode 把 spec 留在服务端，token 消耗固定在 ~1k，与 API 规模脱钩。
+
+## 部署到 SCF（控制台，5 分钟）
 
 ```bash
-npm install
-cp .env.example .env      # 填 TENCENTCLOUD_SECRET_ID / SECRET_KEY
-npm run dev               # http://127.0.0.1:8787/mcp
+make package          # 生成 dist/tencentcloud-mcp.zip（只有 main.py + mcp_tc/）
 ```
 
-自测（不需要客户端）：
+1. **新建函数**：地域任选（如广州）→ 运行环境 **Python 3.10** → 提交方式 **上传 zip 包** → 选 `dist/tencentcloud-mcp.zip`。
+2. **执行方法**：`main.main_handler`。
+3. **函数配置**：内存 256MB、超时 **60s**（一次 execute 可能串几次 API）。
+4. **环境变量**（可选）：`MCP_DEFAULT_REGION=ap-guangzhou`、`MCP_MAX_REQUESTS=20`、`MCP_REQUIRE_CONFIRM=1`。
+5. **触发器**：
+   - 简单方式：开 **函数 URL**（公网访问），路径随意，`POST <url>` 即 MCP 端点。
+   - 常规方式：**API 网关**触发器，请求方法勾 `POST` + `OPTIONS`（CORS 预检），后端超时 ≥ 30s。
+6. **客户端连接**（把 `<URL>` 换成你的触发地址）：
 
 ```bash
-curl -s http://127.0.0.1:8787/healthz | jq
-
-curl -s http://127.0.0.1:8787/mcp \
-  -H 'content-type: application/json' \
-  -H 'accept: application/json, text/event-stream' \
-  -H "authorization: Bearer $TENCENTCLOUD_SECRET_ID:$TENCENTCLOUD_SECRET_KEY" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools[].name'
-```
-
-接入客户端：
-
-```bash
-# Claude Code
-claude mcp add tencentcloud --transport http http://127.0.0.1:8787/mcp \
+claude mcp add tencentcloud --transport http <URL> \
   --header "Authorization: Bearer $TENCENTCLOUD_SECRET_ID:$TENCENTCLOUD_SECRET_KEY"
 ```
 
@@ -91,155 +50,138 @@ claude mcp add tencentcloud --transport http http://127.0.0.1:8787/mcp \
   "mcpServers": {
     "tencentcloud": {
       "type": "http",
-      "url": "http://127.0.0.1:8787/mcp",
+      "url": "<URL>",
       "headers": { "Authorization": "Bearer <secretId>:<secretKey>" }
     }
   }
 }
 ```
 
-> VS Code 的配置根键是 `servers`，不是 `mcpServers`。
+自测（部署完先跑这个）：
+
+```bash
+curl -s <URL> -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | head -c 300
+
+curl -s <URL> -H 'content-type: application/json' \
+  -H "authorization: Bearer $TENCENTCLOUD_SECRET_ID:$TENCENTCLOUD_SECRET_KEY" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"whoami","arguments":{}}}'
+```
+
+## 本地开发
+
+```bash
+python3.10 run_local.py          # http://127.0.0.1:8787/mcp
+make test                        # 不需要网络、不需要密钥
+```
+
+## 鉴权：纯透传
+
+```
+Authorization: Bearer <secretId>:<secretKey>[:<sessionToken>]
+Authorization: Bearer base64(<secretId>:<secretKey>[:<sessionToken>])
+```
+
+- 服务端**不存任何凭据**，每次请求用调用方自己的 key 签名，用完即丢。
+- `MCP_ALLOW_ENV_CREDENTIALS=1` 才会回退到函数环境变量里的 key。**公网开放时保持 0**，否则不带头的请求会烧你自己的账号。
+- 建议客户端用**子账号 + 最小权限策略 + STS 临时密钥**（`whoami` 会显示是不是 `:sts`）。
+
+## 公网开放的加固清单
+
+既然不设鉴权、随便谁都能打，至少把这几项做了：
+
+| 防线 | 做法 |
+| --- | --- |
+| 入口限流 | API 网关 / 函数 URL 配流控（如 10 QPS），或前面挂 WAF |
+| 并发上限 | SCF 函数配置里设“最大并发”（比如 5），防被打满账单 |
+| 预算 | 配告警 + 单函数调用次数告警 |
+| 代码执行 | `MCP_MAX_REQUESTS=10~20`、`MCP_TIMEOUT_MS=20000`；必要时开 `MCP_REQUIRE_CONFIRM=1` |
+| 密钥泄露 | 日志只记方法名/耗时，不记 Authorization；`whoami` 只回 `secretId` 前 6 位掩码 |
+| 写操作 | 客户端侧给子账号策略禁 `*:Delete*`，比任何代码闸都硬 |
 
 ## Code Mode 实战
 
-第一步，模型自己找接口（不消耗全量 schema）：
-
-```js
-// search 的 code 参数
-const hits = spec.actions.filter(
-  (a) => a.service === "cvm" && /instance/i.test(a.action),
-);
-return hits.map(({ service, action, version, summary }) => ({ service, action, version, summary }));
+```python
+# search：先自己找接口
+return [a for a in spec["actions"] if a["service"] == "cvm" and "Instance" in a["action"]]
 ```
 
-第二步，一次 execute 完成“查 + 过滤 + 只要关键字段”：
-
-```js
-// execute 的 code 参数（region=ap-guangzhou）
-const r = await tencent.request({
-  service: "cvm",
-  action: "DescribeInstances",
-  params: { Limit: 50 },
-});
-return r.InstanceSet.map((i) => ({
-  id: i.InstanceId,
-  name: i.InstanceName,
-  state: i.InstanceState,
-  ip: i.PublicIpAddresses?.[0] ?? null,
-}));
+```python
+# execute：查 + 过滤 + 只要关键字段（region=ap-guangzhou）
+r = await tencent.request(service="cvm", action="DescribeInstances", params={"Limit": 50})
+return [{"id": i["InstanceId"], "name": i["InstanceName"], "state": i["InstanceState"]}
+        for i in r["InstanceSet"] if i["InstanceState"] == "RUNNING"]
 ```
 
-也可以在一次 execute 里串多个调用（跨产品也行），中间结果不用回上下文：
+```python
+# 一次 execute 串多个产品，中间结果不回上下文
+disks = await tencent.request(service="cbs", action="DescribeDisks", params={"Limit": 100})
+idle = [d for d in disks["DiskSet"] if d["DiskState"] == "UNATTACHED"]
+return {"idleCount": len(idle), "ids": [d["DiskId"] for d in idle]}
+```
 
-```js
-const disks = await tencent.request({ service: "cbs", action: "DescribeDisks", params: { Limit: 100 } });
-const idle = disks.DiskSet.filter((d) => d.DiskState === "UNATTACHED");
-return { idleCount: idle.length, ids: idle.map((d) => d.DiskId) };
+没收录的产品也能用，显式传 `version`：
+
+```python
+return await tencent.request(service="cynosdb", version="2019-01-07", action="DescribeClusters",
+                             region="ap-guangzhou", params={})
 ```
 
 ## 两种执行引擎
 
-`engine` 决定 `tencent.request()` 底层怎么打：
-
 | engine | 实现 | 适合 |
 | --- | --- | --- |
-| `api`（默认） | 自己实现 TC3-HMAC-SHA256，`fetch` 直连 `https://<service>.tencentcloudapi.com` | 零依赖、任何产品、体积小 |
-| `sdk` | 官方 `tencentcloud-sdk-nodejs` 动态选 Client/Action | 想要官方重试/类型/行为 |
+| `api`（默认） | `mcp_tc/tc3.py` 自签 TC3，`urllib` 直连官方 HTTP API | SCF、零依赖、任何产品 |
+| `sdk` | 动态 `import tencentcloud.<service>.v<version>` 调官方 SDK | 本机/容器，想用官方重试与模型 |
 
-```bash
-npm i tencentcloud-sdk-nodejs   # 只有用 sdk 引擎才需要
-# 全局：TENCENT_MCP_ENGINE=sdk
-# 单连接：http://127.0.0.1:8787/mcp?engine=sdk
-```
-
-两种引擎的入参/出参约定一致，`execute` 返回里会带 `engine` 方便确认。
-
-## 鉴权
-
-1. **按请求传（推荐，多租户）**
-   `Authorization: Bearer <secretId>:<secretKey>[:<sessionToken>]`，或整串 base64（`printf "id:key" | base64`）。
-   建议用子账号 + 最小权限策略 + 临时密钥（STS）。
-2. **服务端环境变量（单租户 / 自用）**
-   `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY` / `TENCENTCLOUD_SESSION_TOKEN`。
-
-没做 OAuth：腾讯云没有对 MCP 的公共 OAuth 端点，所以这里用 Bearer；一键授权的 OAuth 可以作为下一步。
+切换：`MCP_ENGINE=sdk` 或单连接 `?engine=sdk`（需自行 `pip install tencentcloud-sdk-python-common tencentcloud-sdk-python-cvm ...`）。
 
 ## 参数
 
-| 位置 | 参数 | 说明 |
-| --- | --- | --- |
-| URL | `?engine=api\|sdk` | 覆盖执行引擎 |
-| URL | `?truncateToolResult=false` | 关闭 ~6k token 结果截断（客户端自己会兜住结果时用） |
-| env | `TENCENT_MCP_DEFAULT_REGION` | 默认地域，`execute` 没传 region 时用 |
-| env | `TENCENT_MCP_MAX_REQUESTS` | 单次 execute 最大 API 调用数（默认 20） |
-| env | `TENCENT_MCP_TIMEOUT_MS` | 单个 API 请求超时（默认 20000） |
-| env | `TENCENT_MCP_REQUIRE_CONFIRM=true` | 高危 Action 必须带 `confirm: true` 才执行 |
-
-## 加一个产品
-
-不用改任何框架代码，两步：
-
-1. 新建 `src/catalog/services/xxx.ts`，导出 `ServiceDoc`（`version` / `product` / `docUrl` / `actions`）。
-2. 在 `src/catalog/index.ts` 的 `catalog` 里注册。
-
-已收录：`cvm` `vpc` `cbs` `clb` `lighthouse` `scf` `tat` `cam` `sts` `dnspod`。
-没收录的产品也能用，`execute` 里显式传 `version` 即可，例如：
-
-```js
-await tencent.request({ service: "cynosdb", version: "2019-01-07", action: "DescribeClusters", region: "ap-guangzhou", params: {} });
-```
-
-## 安全边界（重要）
-
-- `node:vm` **不是安全边界**，只防误操作（拿不到 `require` / `process` / `fs`）。生产多租户请把 `src/core/sandbox.ts` 换成 Cloudflare Workers Dynamic Worker isolate、gVisor/Firecracker 容器，或至少把服务跑在独立容器里 + 只给它一个窄权限子账号。
-- 默认就有 `TENCENT_MCP_MAX_REQUESTS` 限流、单请求超时和结果截断。
-- 真要防误删：`TENCENT_MCP_REQUIRE_CONFIRM=true`，再配子账号策略（禁止 `*:Delete*`）。
-- 凭据不会进模型上下文：签名/请求都在沙箱外部完成。
+| 位置 | 参数 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| URL | `?engine=api\|sdk` | api | 覆盖执行引擎 |
+| URL | `?truncateToolResult=false` | true | 关闭 ~6k token 结果截断 |
+| env | `MCP_DEFAULT_REGION` | — | 默认地域 |
+| env | `MCP_MAX_REQUESTS` | 20 | 单次 execute 最大 API 调用数 |
+| env | `MCP_TIMEOUT_MS` | 20000 | 单个 API 请求超时 |
+| env | `MCP_REQUIRE_CONFIRM` | 0 | 高危 Action 必须 `confirm=True` |
+| env | `MCP_ALLOW_ENV_CREDENTIALS` | 0 | 是否允许回退到环境变量密钥 |
 
 ## 目录结构
 
 ```
-src/
-  index.ts              # HTTP + 鉴权 + 每请求一个 server 实例
-  mcp/
-    server.ts           # McpServer + instructions
-    context.ts result.ts
-    tools/{search,execute,docs,whoami}.ts
-  core/
-    auth.ts             # Bearer / env -> Credentials
-    tc3.ts              # TC3-HMAC-SHA256 签名
-    apiClient.ts        # engine=api
-    sdkClient.ts        # engine=sdk
-    requester.ts        # 版本/region/confirm/限流
-    sandbox.ts          # 跑模型写的 JS
-    truncate.ts
-  catalog/
-    index.ts types.ts
-    services/*.ts
+main.py              # SCF 入口：main.main_handler（事件函数 / API 网关 / 函数 URL）
+run_local.py         # 本地 http.server，复用同一套 dispatch
+mcp_tc/
+  server.py          # 最小 MCP JSON-RPC 层 + CORS + 路由
+  tools.py           # 4 个工具的定义与实现
+  client.py          # TencentClient（版本/region/confirm/限流/超时）+ 沙箱门面
+  tc3.py             # TC3-HMAC-SHA256 签名
+  auth.py            # Bearer 透传解析、env 回退开关
+  sandbox.py         # AST 白名单 + 受限 exec（跑模型写的 Python）
+  catalog.py         # catalog.json 加载 / 扁平化 / 关键词检索
+  catalog.json       # Action 目录（10 产品 / ~60 Action）
+  context.py         # 每次请求的上下文（无状态）
+tests/test_smoke.py  # 无网络单测
+Makefile             # make test / dev / package
 ```
 
-## 开发
+## 安全边界（必读）
 
-```bash
-npm run typecheck
-npm test
-npm run build && npm start
-```
-
-Docker：
-
-```bash
-docker build -t tencentcloud-mcp .
-docker run --rm -p 8787:8787 -e TENCENTCLOUD_SECRET_ID=... -e TENCENTCLOUD_SECRET_KEY=... tencentcloud-mcp
-```
+- `sandbox.py` 是 **AST 白名单 + 受限 `exec`**：禁用 import、eval/exec/open、`__dunder__`，`__builtins__` 只留安全白名单。但它**不是**隔离边界 —— 能拿到的权限 = 该次请求的 key + 进程能做的事（Python 能被绕过的点很多）。
+- 你这种“公网 + 透传”的形态下，沙箱逃逸的真实收益是：拿到同时段其他请求的 key、环境变量、内网。所以：
+  - 保持 `MCP_ALLOW_ENV_CREDENTIALS=0`（环境里没有长期密钥可偷）；
+  - 函数所在 VPC 不要放敏感内网资源；
+  - 真要对外大规模开放，把 `execute` 的代码执行下沉到独立隔离执行器（Firecracker / gVisor / K8s job），或改成“声明式批量调用”不给跑代码。
+- 已知限制：SCF 响应体上限 6MB（已用 24k 字符截断兜住）、无 SSE、冷启动 ~数百 ms。
 
 ## Roadmap
 
-- [ ] OAuth 2.1 接入（替代手工 Bearer）
-- [ ] catalog 从腾讯云 API 文档/OpenAPI 自动生成，覆盖全部产品
-- [ ] MCP `skills` 扩展（把常用 playbook 当 skill 发）
-- [ ] Cloudflare Workers 版：用 Dynamic Worker 替换 `node:vm`
-- [ ] 按请求的审计日志（谁、什么 action、结果）
+- [ ] 声明式 `execute`（`calls: [{service, action, params}]`，完全不跑代码）
+- [ ] `catalog.json` 自动生成，覆盖全量产品
+- [ ] 可选 OAuth 2.1 网关
+- [ ] 执行器下沉（gVisor / K8s job）
 
 ## License
 

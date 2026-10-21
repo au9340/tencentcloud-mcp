@@ -5,14 +5,17 @@ on:
   pull_request:
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-          cache: npm
-      - run: npm install --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm test
+          python-version: "3.10"
+      - name: 语法检查
+        run: |
+          python -m compileall -q main.py run_local.py mcp_tc tests
+      - name: 单元测试（无网络依赖）
+        run: python -m unittest discover -s tests -t . -v
+      - name: 打包 SCF zip
+        run: make package

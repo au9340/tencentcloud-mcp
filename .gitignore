@@ -1,9 +1,10 @@
-node_modules/
+__pycache__/
+*.py[cod]
 dist/
 .env
-.env.local
+.venv/
+venv/
 *.log
 .DS_Store
-coverage/
 .idea/
 .vscode/
